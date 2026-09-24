@@ -54,45 +54,45 @@ identically at every noise level, since it never looks at its seed input
 "retention" axis: you cannot drift if you never expand). Replace the
 feedback logic; keep the same function shapes.
 """
-import os
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
-from submission.corpus_utils import load_corpus
-from submission.lm_utils import CollectionStats, dirichlet_smoothed_log_prob, tokenize
+from submission.lm import Analyzer, Stats, ql_score, rank
 
-# TODO(you): tune this. mu is the Dirichlet smoothing parameter (Section
-# 3.1) -- larger values smooth more aggressively toward the collection
-# model. There is no single "correct" value; it is a real design choice.
-DIRICHLET_MU = 1500.0
+# ---- knobs (tuned on dev, see report) ----
+SMOOTHING = "dirichlet"   # "dirichlet" or "jm"
+DIRICHLET_MU = 250.0
+JM_LAMBDA = 0.7
+STOPWORDS = True
+STEMMER = "s"             # "none" or "s"
 
-# ---------------------------------------------------------------------------
-# Module-level state. prepare() populates this; both retrieval functions
-# read it. No build/load process split this assignment (see module
-# docstring) -- unlike Assignment 1, it is fine for this to just live in
-# memory for the lifetime of the harness process.
-# ---------------------------------------------------------------------------
-_STATS: Optional[CollectionStats] = None
+_STATS: Optional[Stats] = None
 
 
 def prepare(corpus_path: str) -> None:
-    """Load the corpus and build collection-wide statistics. Called once,
-    before any score_candidates()/relevance_model_feedback() calls."""
     global _STATS
-    corpus = load_corpus(corpus_path)
-    _STATS = CollectionStats.from_corpus(corpus)
+    _STATS = Stats.from_jsonl(corpus_path, Analyzer(stop=STOPWORDS, stem=STEMMER))
+
+
+def _need_stats() -> Stats:
+    if _STATS is None:
+        raise RuntimeError("call prepare(corpus_path) first")
+    return _STATS
+
+
+def _smooth_param() -> float:
+    return DIRICHLET_MU if SMOOTHING == "dirichlet" else JM_LAMBDA
 
 
 def score_candidates(query: str, candidate_doc_ids: List[str], k: int = 10) -> List[Tuple[str, float]]:
-    """Return up to k (doc_id, score) pairs from `candidate_doc_ids`,
-    best first, under a Dirichlet-smoothed unigram query-likelihood model
-    (Section 3.1)."""
-    if _STATS is None:
-        raise RuntimeError(
-            "score_candidates() called before prepare(); the harness "
-            "always calls prepare(corpus_path) before any retrieval "
-            "calls. If you're testing manually, do the same."
-        )
-    return _ql_rerank(query, candidate_doc_ids, k, _STATS)
+    st = _need_stats()
+    q = st.an(query)
+    if not q:
+        return []
+    param = _smooth_param()
+    scores = {}
+    for d in dict.fromkeys(candidate_doc_ids):  # dedup, keep order
+        scores[d] = ql_score(q, st.tf(d), st.dl(d), st, SMOOTHING, param)
+    return rank(scores, k)
 
 
 def relevance_model_feedback(
@@ -101,49 +101,5 @@ def relevance_model_feedback(
     candidate_doc_ids: List[str],
     k: int = 10,
 ) -> List[Tuple[str, float]]:
-    """Return up to k (doc_id, score) pairs from `candidate_doc_ids`,
-    best first, using a relevance model estimated from
-    `pseudo_relevant_doc_ids` (Section 3.2). See the module docstring --
-    these are two different lists doing two different jobs.
-    """
-    if _STATS is None:
-        raise RuntimeError(
-            "relevance_model_feedback() called before prepare(); see "
-            "score_candidates()'s error for the same reason."
-        )
-
-    # TODO(you): replace this with real RM1 -> RM3 feedback, e.g.:
-    #
-    #   relevance_model = estimate_relevance_model(query, pseudo_relevant_doc_ids, _STATS)
-    #   interpolated = interpolate_with_query_model(relevance_model, query, lam=0.5)
-    #   return rank_by_relevance_model(interpolated, candidate_doc_ids, _STATS, k)
-    #
-    # The trivial baseline below ignores pseudo_relevant_doc_ids entirely
-    # and just reranks candidate_doc_ids with plain query-likelihood.
-    return _ql_rerank(query, candidate_doc_ids, k, _STATS)
-
-
-# ---------------------------------------------------------------------------
-# Trivial reference baseline internals -- DO NOT submit this as your final
-# entry. A real Dirichlet-smoothed QL reranker (not a stub), so it is a
-# legitimate Track A entry on its own; only the feedback layer is a no-op.
-# ---------------------------------------------------------------------------
-def _ql_rerank(query: str, doc_ids: List[str], k: int, stats: CollectionStats) -> List[Tuple[str, float]]:
-    query_terms = tokenize(query)
-    if not query_terms:
-        return []
-
-    scores: Dict[str, float] = {}
-    for doc_id in doc_ids:
-        doc_length = stats.doc_lengths.get(doc_id, 0)
-        term_counts = stats.doc_term_counts(doc_id)
-        log_prob = 0.0
-        for term in query_terms:
-            p_collection = stats.collection_prob(term)
-            log_prob += dirichlet_smoothed_log_prob(
-                term_counts.get(term, 0), doc_length, p_collection, DIRICHLET_MU
-            )
-        scores[doc_id] = log_prob
-
-    ranked = sorted(scores.items(), key=lambda pair: pair[1], reverse=True)
-    return ranked[:k]
+    # TODO P2: RM1/RM2/RM3. plain QL for now
+    return score_candidates(query, candidate_doc_ids, k)
