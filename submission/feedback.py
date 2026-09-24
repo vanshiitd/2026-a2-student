@@ -63,7 +63,7 @@ SMOOTHING = "dirichlet"   # "dirichlet" or "jm"
 DIRICHLET_MU = 250.0
 JM_LAMBDA = 0.7
 STOPWORDS = True
-STEMMER = "s"             # "none" or "s"
+STEMMER = "porter"        # "none", "s" or "porter"
 
 _STATS: Optional[Stats] = None
 
