@@ -33,7 +33,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True)
     ap.add_argument("--pool", default=None)
-    ap.add_argument("--suite", default="practice", choices=["practice", "full"])
+    ap.add_argument("--suite", default="practice", choices=["practice", "full", "lite"])
     ap.add_argument("--tag", default=None)
     ap.add_argument("--set", action="append", default=[])
     args = ap.parse_args()

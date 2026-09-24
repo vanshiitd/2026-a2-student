@@ -4,6 +4,7 @@
 # suites
 #   practice : exactly what harness/run_harness.py does (own QL top-10 seed, uniform 0.25/0.5, same rng seeds)
 #   full     : practice-style clean seed + pool top-10 seed + 3 noise types x 4 levels x 3 seeds
+#   lite     : same but levels 0.25/0.5 and one seed (for the bigger transfer sets)
 # noise types (all draw replacements from the same pool, like the public recipe)
 #   uniform  : public recipe (harness.noise_injection)
 #   hard     : judged/unjudged NON-relevant docs that our own QL ranks highest (plausible but wrong)
@@ -23,6 +24,7 @@ from harness.trec_io import read_qrels, read_queries
 NOISE_TYPES = ["uniform", "hard", "adjacent"]
 FULL_LEVELS = [0.1, 0.25, 0.5, 0.75]
 FULL_SEEDS = [0, 1, 2]
+SUITE_GRID = {"full": (FULL_LEVELS, FULL_SEEDS), "lite": ([0.25, 0.5], [0])}
 NEIGHBOUR_DEPTH = 20  # hard/adjacent pick from this many next-best docs
 
 
@@ -82,9 +84,10 @@ def build_conditions(data: Dict, own_ranked: Dict[str, List[str]], suite: str) -
             continue
         conds.setdefault("clean_pool", {})[qid] = pool[:PRF_DEPTH]
         qr = data["qrels"].get(qid, {})
+        levels, seed_list = SUITE_GRID[suite]
         for kind in NOISE_TYPES:
-            for level in FULL_LEVELS:
-                for s in FULL_SEEDS:
+            for level in levels:
+                for s in seed_list:
                     rng = random.Random(noise_injection.stable_seed(qid, base_seed=1000 * (s + 1)) + int(level * 100))
                     ids = make_noisy(kind, clean, pool, own_ranked[qid], qr, level, rng)
                     conds.setdefault(f"{kind}@{level}#{s}", {})[qid] = ids

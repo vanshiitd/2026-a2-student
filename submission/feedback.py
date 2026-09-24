@@ -57,6 +57,7 @@ feedback logic; keep the same function shapes.
 from typing import List, Optional, Tuple
 
 from submission.lm import Analyzer, Stats, ql_score, rank
+from submission import rm
 
 # ---- knobs (tuned on dev, see report) ----
 SMOOTHING = "dirichlet"   # "dirichlet" or "jm"
@@ -64,6 +65,12 @@ DIRICHLET_MU = 250.0
 JM_LAMBDA = 0.7
 STOPWORDS = True
 STEMMER = "porter"        # "none", "s" or "porter"
+
+FB_MODEL = "rm3"          # "rm1", "rm2" or "rm3"
+RM3_BASE = "rm1"          # which relevance model rm3 interpolates
+FB_TERMS = 20             # expansion terms kept (0 = all)
+FB_LAMBDA = 0.85          # rm3 weight on the original query (high on purpose, drift)
+RM_EST_MU = 0.0           # doc model smoothing inside RM estimation (0 = max likelihood)
 
 _STATS: Optional[Stats] = None
 
@@ -86,8 +93,6 @@ def _smooth_param() -> float:
 def score_candidates(query: str, candidate_doc_ids: List[str], k: int = 10) -> List[Tuple[str, float]]:
     st = _need_stats()
     q = st.an(query)
-    if not q:
-        return []
     param = _smooth_param()
     scores = {}
     for d in dict.fromkeys(candidate_doc_ids):  # dedup, keep order
@@ -101,5 +106,20 @@ def relevance_model_feedback(
     candidate_doc_ids: List[str],
     k: int = 10,
 ) -> List[Tuple[str, float]]:
-    # TODO P2: RM1/RM2/RM3. plain QL for now
-    return score_candidates(query, candidate_doc_ids, k)
+    st = _need_stats()
+    q = st.an(query)
+    rel = _relevance_model(FB_MODEL if FB_MODEL != "rm3" else RM3_BASE, q, pseudo_relevant_doc_ids, st)
+    if not rel:
+        # nothing usable in the seed -> just the query
+        return score_candidates(query, candidate_doc_ids, k)
+    rel = rm.truncate(rel, FB_TERMS)
+    model = rm.rm3(q, rel, FB_LAMBDA) if FB_MODEL == "rm3" else rel
+    return rank(rm.ce_scores(model, candidate_doc_ids, st, DIRICHLET_MU), k)
+
+
+def _relevance_model(kind, q, seed, st):
+    if kind == "rm1":
+        return rm.rm1(q, seed, st, DIRICHLET_MU, RM_EST_MU)
+    if kind == "rm2":
+        return rm.rm2(q, seed, st, DIRICHLET_MU, RM_EST_MU)
+    raise ValueError(kind)

@@ -59,7 +59,7 @@ def test_unseen_term_skipped_and_empty_query(tiny):
     b = dict(fb.score_candidates("cat zebra", ["d1", "d2"], 10))
     assert a == pytest.approx(b)
     assert fb.score_candidates("zebra", ["d1", "d2"], 10) != []  # all zero, still a valid ranking
-    assert fb.score_candidates("", ["d1", "d2"], 10) == []
+    assert len(fb.score_candidates("", ["d1", "d2"], 10)) == 2  # nothing to score on, still a valid list
 
 
 def test_only_pool_docs_no_dups_k_cap(tiny):
