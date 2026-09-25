@@ -108,18 +108,21 @@ def relevance_model_feedback(
 ) -> List[Tuple[str, float]]:
     st = _need_stats()
     q = st.an(query)
-    rel = _relevance_model(FB_MODEL if FB_MODEL != "rm3" else RM3_BASE, q, pseudo_relevant_doc_ids, st)
+    rel = _feedback_model(q, pseudo_relevant_doc_ids, st)
     if not rel:
         # nothing usable in the seed -> just the query
         return score_candidates(query, candidate_doc_ids, k)
-    rel = rm.truncate(rel, FB_TERMS)
     model = rm.rm3(q, rel, FB_LAMBDA) if FB_MODEL == "rm3" else rel
-    return rank(rm.ce_scores(model, candidate_doc_ids, st, DIRICHLET_MU), k)
+    return rank(rm.ce_scores(model, candidate_doc_ids, st, _smooth_param(), SMOOTHING), k)
 
 
-def _relevance_model(kind, q, seed, st):
+def _feedback_model(q, seed, st):
+    """truncated relevance model from the seed (rm3 interpolation happens after this)"""
+    kind = FB_MODEL if FB_MODEL != "rm3" else RM3_BASE
     if kind == "rm1":
-        return rm.rm1(q, seed, st, DIRICHLET_MU, RM_EST_MU)
-    if kind == "rm2":
-        return rm.rm2(q, seed, st, DIRICHLET_MU, RM_EST_MU)
-    raise ValueError(kind)
+        rel = rm.rm1(q, seed, st, _smooth_param(), RM_EST_MU, SMOOTHING)
+    elif kind == "rm2":
+        rel = rm.rm2(q, seed, st, _smooth_param(), RM_EST_MU, SMOOTHING)
+    else:
+        raise ValueError(kind)
+    return rm.truncate(rel, FB_TERMS) if rel else rel

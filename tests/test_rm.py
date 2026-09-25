@@ -112,3 +112,16 @@ def test_seed_outside_pool_unknown_or_empty(tiny, monkeypatch, model):
     assert fb.relevance_model_feedback("cat", [], ["d1", "d2"], 10) == fb.score_candidates("cat", ["d1", "d2"], 10)
     assert fb.relevance_model_feedback("cat", ["ghost"], ["d1", "d2"], 10) == fb.score_candidates("cat", ["d1", "d2"], 10)
 
+
+
+def test_lambda_one_reproduces_score_candidates_with_jm_too(monkeypatch):
+    monkeypatch.setattr(fb, "FB_MODEL", "rm3")
+    monkeypatch.setattr(fb, "FB_LAMBDA", 1.0)
+    monkeypatch.setattr(fb, "SMOOTHING", "jm")
+    fb.prepare(os.path.join(TOY, "corpus.jsonl"))
+    cands = read_candidates(os.path.join(TOY, "candidates_dev.jsonl"))
+    for qid, text in read_queries(os.path.join(TOY, "queries_dev.tsv")):
+        pool = [d for d, _ in cands[qid]]
+        a = [d for d, _ in fb.score_candidates(text, pool, 10)]
+        b = [d for d, _ in fb.relevance_model_feedback(text, pool[5:10], pool, 10)]
+        assert a == b

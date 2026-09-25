@@ -94,43 +94,49 @@ def build_conditions(data: Dict, own_ranked: Dict[str, List[str]], suite: str) -
     return conds
 
 
-def evaluate(sub, data: Dict, suite: str = "practice", do_prepare: bool = True) -> Dict:
+def prepare_base(sub, data: Dict, suite: str) -> Dict:
+    """the part of an eval that doesnt depend on feedback knobs: own QL rankings, QL metrics, seed conditions.
+    sweeps compute it once and pass it to evaluate() for every config"""
+    qrels = data["qrels"]
+    perq_ql: Dict[str, float] = {}
+    ql_map: Dict[str, float] = {}
+    own_ranked: Dict[str, List[str]] = {}
+    max_call = 0.0
+    for qid, text in data["queries"]:
+        pool = data["pools"][qid]
+        t0 = time.perf_counter()
+        res = sub.score_candidates(text, pool, len(pool))
+        max_call = max(max_call, time.perf_counter() - t0)
+        full = _validate_and_sort_results(res, qid, len(pool), set(pool))
+        own_ranked[qid] = [d for d, _ in full]
+        top = own_ranked[qid][:10]
+        perq_ql[qid] = ndcg_at_k(top, qrels.get(qid, {}))
+        ql_map[qid] = average_precision(top, qrels.get(qid, {}))
+    return {"perq_ql": perq_ql, "ql_map": ql_map, "conds": build_conditions(data, own_ranked, suite),
+            "max_call_s": max_call}
+
+
+def evaluate(sub, data: Dict, suite: str = "practice", do_prepare: bool = True, base: Dict = None) -> Dict:
     """sub = module with prepare/score_candidates/relevance_model_feedback.
     returns {'perq': {name: {qid: ndcg}}, 'ql_map': {qid: ap}, 'summary': {...}, 'max_call_s': float}"""
     if do_prepare:
         sub.prepare(data["corpus"])
+    if base is None:
+        base = prepare_base(sub, data, suite)
     qrels = data["qrels"]
-    perq: Dict[str, Dict[str, float]] = {"ql": {}}
-    ql_map: Dict[str, float] = {}
-    own_ranked: Dict[str, List[str]] = {}
-    max_call = 0.0
-
-    def timed(fn: Callable, *a):
-        nonlocal max_call
-        t0 = time.perf_counter()
-        r = fn(*a)
-        max_call = max(max_call, time.perf_counter() - t0)
-        return r
-
-    for qid, text in data["queries"]:
-        pool = data["pools"][qid]
-        valid = set(pool)
-        full = _validate_and_sort_results(timed(sub.score_candidates, text, pool, len(pool)), qid, len(pool), valid)
-        own_ranked[qid] = [d for d, _ in full]
-        top = own_ranked[qid][:10]
-        perq["ql"][qid] = ndcg_at_k(top, qrels.get(qid, {}))
-        ql_map[qid] = average_precision(top, qrels.get(qid, {}))
-
-    conds = build_conditions(data, own_ranked, suite)
+    perq: Dict[str, Dict[str, float]] = {"ql": dict(base["perq_ql"])}
+    max_call = base["max_call_s"]
     text_of = dict(data["queries"])
-    for name, seeds in conds.items():
+    for name, seeds in base["conds"].items():
         perq[name] = {}
         for qid, seed_ids in seeds.items():
             pool = data["pools"][qid]
-            res = _validate_and_sort_results(
-                timed(sub.relevance_model_feedback, text_of[qid], seed_ids, pool, 10), qid, 10, set(pool))
+            t0 = time.perf_counter()
+            res = sub.relevance_model_feedback(text_of[qid], seed_ids, pool, 10)
+            max_call = max(max_call, time.perf_counter() - t0)
+            res = _validate_and_sort_results(res, qid, 10, set(pool))
             perq[name][qid] = ndcg_at_k([d for d, _ in res], qrels.get(qid, {}))
-
+    ql_map = base["ql_map"]
     return {"perq": perq, "ql_map": ql_map, "summary": summarize(perq, ql_map), "max_call_s": max_call,
             "suite": suite, "pool": data["pool_name"]}
 

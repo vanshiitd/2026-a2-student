@@ -2,11 +2,21 @@
 # pure stdlib on purpose, grader only promises basic packages
 import json
 import math
-import re
+import os
 from collections import Counter
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
+# tokens = runs of [a-z0-9] after lowercasing. done with a byte translate table instead of a regex,
+# ~2x faster on the full corpus and gives exactly the same tokens (non-ascii chars -> '?' -> separator)
+_TABLE = bytearray(b" " * 256)
+for _c in b"abcdefghijklmnopqrstuvwxyz0123456789":
+    _TABLE[_c] = _c
+_TABLE = bytes(_TABLE)
+
+
+def tokens(text: str) -> List[str]:
+    return text.lower().encode("ascii", "replace").translate(_TABLE).decode("ascii").split()
+
 
 # common english function words, own list. kept small on purpose
 STOPWORDS = frozenset("""
@@ -152,7 +162,7 @@ class Analyzer:
         self.stem = stem
         self._cache: Dict[str, Optional[str]] = {}
 
-    def _term(self, tok: str) -> Optional[str]:
+    def term(self, tok: str) -> Optional[str]:
         t = self._cache.get(tok, 0)
         if t != 0:
             return t
@@ -168,49 +178,60 @@ class Analyzer:
         return t
 
     def __call__(self, text: str) -> List[str]:
-        out = []
-        for tok in _TOKEN_RE.findall(text.lower()):
-            t = self._term(tok)
-            if t is not None:
-                out.append(t)
-        return out
+        term = self.term
+        return [t for t in map(term, tokens(text)) if t is not None]
 
 
 class Stats:
-    """collection counts built once; per doc counts done lazily for docs we actually score"""
+    """collection counts built once. doc text is NOT kept in memory, only (offset, length) of its
+    line in the corpus file; per doc term counts are read + cached lazily for docs we actually score"""
 
     def __init__(self, analyzer: Analyzer):
         self.an = analyzer
-        self.texts: Dict[str, str] = {}
+        self.loc: Dict[str, Tuple[int, int]] = {}
         self.doc_len: Dict[str, int] = {}
         self.cf: Counter = Counter()
         self.total = 0
         self._tf: Dict[str, Counter] = {}
+        self._fd: Optional[int] = None
 
     @classmethod
     def from_jsonl(cls, path: str, analyzer: Analyzer) -> "Stats":
         st = cls(analyzer)
-        with open(path, "r", encoding="utf-8") as f:
+        raw = Counter()  # raw token counts over the whole collection, stemming done once per type at the end
+        stop = STOPWORDS if analyzer.stop else frozenset()
+        off = 0
+        with open(path, "rb") as f:
             for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                obj = json.loads(line)
-                st.add(obj["doc_id"], obj["text"])
+                n = len(line)
+                if line.strip():
+                    obj = json.loads(line)
+                    toks = tokens(obj["text"])
+                    raw.update(toks)
+                    st.loc[obj["doc_id"]] = (off, n)
+                    # analyzer only ever drops stopwords, so length = tokens - stopwords
+                    st.doc_len[obj["doc_id"]] = len(toks) - sum(map(stop.__contains__, toks))
+                off += n
+        for tok, c in raw.items():
+            t = analyzer.term(tok)
+            if t is not None:
+                st.cf[t] += c
+        st.total = sum(st.cf.values())
+        st._fd = os.open(path, os.O_RDONLY)
         return st
 
-    def add(self, doc_id: str, text: str) -> None:
-        terms = self.an(text)
-        self.texts[doc_id] = text
-        self.doc_len[doc_id] = len(terms)
-        self.cf.update(terms)
-        self.total += len(terms)
+    def _text(self, doc_id: str) -> str:
+        loc = self.loc.get(doc_id)
+        if loc is None:
+            return ""
+        # pread = positional read, no shared file offset, so its safe even if the process forks
+        return json.loads(os.pread(self._fd, loc[1], loc[0]))["text"]
 
     def tf(self, doc_id: str) -> Counter:
         c = self._tf.get(doc_id)
         if c is None:
             # unknown doc id -> treat as empty doc instead of crashing the query
-            c = Counter(self.an(self.texts.get(doc_id, "")))
+            c = Counter(self.an(self._text(doc_id)))
             self._tf[doc_id] = c
         return c
 
@@ -224,24 +245,32 @@ class Stats:
     def avgdl(self) -> float:
         return self.total / len(self.doc_len) if self.doc_len else 0.0
 
+    def __del__(self):
+        if self._fd is not None:
+            try:
+                os.close(self._fd)
+            except OSError:
+                pass
+
+
+def p_smooth(c: int, dl: int, pc: float, method: str, param: float) -> float:
+    """smoothed P(w|D). dirichlet: (c + mu*pc)/(dl + mu)    jm: (1-lam)*c/dl + lam*pc"""
+    if method == "dirichlet":
+        return (c + param * pc) / (dl + param)
+    if method == "jm":
+        return (1 - param) * (c / dl if dl else 0.0) + param * pc
+    raise ValueError(method)
+
 
 def ql_score(q_terms: List[str], tf: Counter, dl: int, st: Stats, method: str, param: float) -> float:
-    """log P(Q|D) = sum over query tokens of log P(w|D).
-    dirichlet: (tf + mu*p_c)/(dl + mu)      jm: (1-lam)*tf/dl + lam*p_c
+    """log P(Q|D) = sum over query tokens of log P(w|D), smoothing as in p_smooth.
     terms never seen in the collection are skipped (same -inf for every doc, so no effect on ranking)"""
     s = 0.0
     for w in q_terms:
         pc = st.p_c(w)
         if pc == 0.0:
             continue
-        c = tf.get(w, 0)
-        if method == "dirichlet":
-            p = (c + param * pc) / (dl + param)
-        elif method == "jm":
-            p = (1 - param) * (c / dl if dl else 0.0) + param * pc
-        else:
-            raise ValueError(method)
-        s += math.log(p)
+        s += math.log(p_smooth(tf.get(w, 0), dl, pc, method, param))
     return s
 
 

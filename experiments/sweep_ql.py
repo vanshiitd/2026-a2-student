@@ -40,6 +40,7 @@ def main():
 
     for stop, stem in ANALYZERS:
         sub.STOPWORDS, sub.STEMMER = stop, stem
+        sub._STATS = None  # free old stats first, else peak RSS doubles
         sub.prepare(datasets[0]["corpus"])
         for method, params in (("dirichlet", MUS), ("jm", LAMS)):
             sub.SMOOTHING = method

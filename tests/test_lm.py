@@ -75,3 +75,12 @@ def test_analyzer():
     assert an("What are the Studies of COVID-19 viruses?") == ["study", "covid", "19", "viruse"]
     assert Analyzer(stop=False)("The cats") == ["the", "cats"]
     assert [s_stem(w) for w in ["studies", "glasses", "virus", "cells", "is"]] == ["study", "glasse", "virus", "cell", "is"]
+
+
+def test_fast_tokenizer_matches_regex():
+    import re
+    from submission.lm import tokens
+    rx = re.compile(r"[a-z0-9]+")
+    for s in ["COVID-19 (SARS-CoV-2)!", "naïve café 5µm", "K-mer İstanbul ǅ", "a\tb\nc", "", "  x  ",
+              "β-coronavirus 2019-nCoV; RT-qPCR@37°C", "日本語 text 123abc"]:
+        assert tokens(s) == rx.findall(s.lower()), s
