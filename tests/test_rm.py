@@ -22,7 +22,7 @@ def tiny(tmp_path, monkeypatch):
         f.write(json.dumps({"doc_id": "d1", "text": "cat cat dog"}) + "\n")
         f.write(json.dumps({"doc_id": "d2", "text": "dog fish"}) + "\n")
     for name, val in [("STOPWORDS", False), ("STEMMER", "none"), ("SMOOTHING", "dirichlet"),
-                      ("DIRICHLET_MU", 2.0), ("RM_EST_MU", 0.0), ("FB_TERMS", 0)]:
+                      ("DIRICHLET_MU", 2.0), ("RM_EST_MU", 0.0), ("FB_TERMS", 0), ("PROX_WEIGHT", 0.0)]:
         monkeypatch.setattr(fb, name, val)
     fb.prepare(str(p))
     return fb._STATS

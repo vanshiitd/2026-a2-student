@@ -57,7 +57,7 @@ feedback logic; keep the same function shapes.
 from typing import List, Optional, Tuple
 
 from submission.lm import Analyzer, Stats, ql_score, rank
-from submission import rm
+from submission import prox, rm
 
 # ---- knobs (tuned on dev + leaderboard probes, see report) ----
 SMOOTHING = "dirichlet"   # "dirichlet" or "jm"
@@ -65,6 +65,8 @@ DIRICHLET_MU = 500.0
 JM_LAMBDA = 0.7
 STOPWORDS = True
 STEMMER = "porter"        # "none", "s" or "porter"
+PROX_WEIGHT = 2.0         # mindist proximity bonus on top of QL (0 = pure unigram QL)
+PROX_ALPHA = 0.3
 
 FB_MODEL = "rm3"          # "rm1", "rm2" or "rm3"
 RM3_BASE = "rm1"          # which relevance model rm3 interpolates
@@ -91,13 +93,19 @@ def _smooth_param() -> float:
     return DIRICHLET_MU if SMOOTHING == "dirichlet" else JM_LAMBDA
 
 
+def _prox(q: List[str], docs: List[str], st: Stats):
+    return prox.bonus(q, docs, st, PROX_WEIGHT, PROX_ALPHA) if PROX_WEIGHT > 0 else None
+
+
 def score_candidates(query: str, candidate_doc_ids: List[str], k: int = 10) -> List[Tuple[str, float]]:
     st = _need_stats()
     q = st.an(query)
     param = _smooth_param()
-    scores = {}
-    for d in dict.fromkeys(candidate_doc_ids):  # dedup, keep order
-        scores[d] = ql_score(q, st.tf(d), st.dl(d), st, SMOOTHING, param)
+    docs = list(dict.fromkeys(candidate_doc_ids))  # dedup, keep order
+    scores = {d: ql_score(q, st.tf(d), st.dl(d), st, SMOOTHING, param) for d in docs}
+    bon = _prox(q, docs, st)
+    if bon:
+        scores = {d: v + bon[d] for d, v in scores.items()}
     return rank(scores, k)
 
 
@@ -114,7 +122,12 @@ def relevance_model_feedback(
         # nothing usable in the seed -> just the query
         return score_candidates(query, candidate_doc_ids, k)
     model = rm.rm3(q, rel, FB_LAMBDA) if FB_MODEL == "rm3" else rel
-    return rank(rm.ce_scores(model, candidate_doc_ids, st, _smooth_param(), SMOOTHING), k)
+    scores = rm.ce_scores(model, candidate_doc_ids, st, _smooth_param(), SMOOTHING)
+    bon = _prox(q, list(scores), st)
+    if bon and q:
+        # ce = QL/|q| at lambda 1, so bonus/|q| keeps feedback(lambda=1) == score_candidates ranking
+        scores = {d: v + bon[d] / len(q) for d, v in scores.items()}
+    return rank(scores, k)
 
 
 def _feedback_model(q, seed, st):

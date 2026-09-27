@@ -3,22 +3,21 @@
 import json
 import math
 import os
+import re
 from collections import Counter
 from typing import Dict, List, Optional, Tuple
 
-# tokens = runs of [a-z0-9] after lowercasing. done with a byte translate table instead of a regex,
-# ~2x faster on the full corpus and gives exactly the same tokens (non-ascii chars -> '?' -> separator)
-_TABLE = bytearray(b" " * 256)
-for _c in b"abcdefghijklmnopqrstuvwxyz0123456789":
-    _TABLE[_c] = _c
-_TABLE = bytes(_TABLE)
+# tokens = maximal runs of a-z or 0-9 after lowercasing. letters and digits are cut apart too, so
+# cov2 -> cov 2, ace2 -> ace 2, covid19 -> covid 19 (queries and docs write these differently).
+# anything non-ascii is a separator.
+_TOKEN_RE = re.compile(r"[a-z]+|[0-9]+")
 
 
 def tokens(text: str) -> List[str]:
-    return text.lower().encode("ascii", "replace").translate(_TABLE).decode("ascii").split()
+    return _TOKEN_RE.findall(text.lower())
 
 
-# common english function words, own list. kept small on purpose
+# common english function / filler words, own list
 STOPWORDS = frozenset("""
 a about above after again against all also am an and any are as at be been before being below between both but by
 can could did do does doing down during each either few for from further had has have having he her here hers him
@@ -26,6 +25,14 @@ his how i if in into is it its itself just may me might more most must my no nor
 our ours out over own same shall she should so some such than that the their theirs them then there these they this
 those through to too under until up upon very was we were what when where whether which while who whom whose why will
 with within would you your yours
+across afterwards almost alone along already although always among amongst another anyhow anyone anything anyway
+anywhere around became because become becomes becoming beforehand behind beside besides beyond cannot done due eg
+else elsewhere enough etc even ever every everyone everything everywhere except hence hereafter hereby herein hereupon
+however ie indeed instead latter latterly least less many meanwhile moreover mostly much namely neither never
+nevertheless next nobody none noone nothing now nowhere often onto others otherwise perhaps rather really said several
+since somehow someone something sometime sometimes somewhere still thence thereafter thereby therefore therein
+thereupon thus together toward towards unless unlike via well whatever whence whenever whereafter whereas whereby
+wherein whereupon wherever whoever whole yet
 """.split())
 
 
@@ -160,13 +167,14 @@ class Analyzer:
     def __init__(self, stop: bool = True, stem: str = "none"):
         self.stop = stop
         self.stem = stem
+        self.stopset = STOPWORDS if stop else frozenset()
         self._cache: Dict[str, Optional[str]] = {}
 
     def term(self, tok: str) -> Optional[str]:
         t = self._cache.get(tok, 0)
         if t != 0:
             return t
-        if self.stop and tok in STOPWORDS:
+        if tok in self.stopset:
             t = None
         elif self.stem == "s":
             t = s_stem(tok)
@@ -193,13 +201,14 @@ class Stats:
         self.cf: Counter = Counter()
         self.total = 0
         self._tf: Dict[str, Counter] = {}
+        self._terms: Dict[str, List[str]] = {}
         self._fd: Optional[int] = None
 
     @classmethod
     def from_jsonl(cls, path: str, analyzer: Analyzer) -> "Stats":
         st = cls(analyzer)
         raw = Counter()  # raw token counts over the whole collection, stemming done once per type at the end
-        stop = STOPWORDS if analyzer.stop else frozenset()
+        stop = analyzer.stopset
         off = 0
         with open(path, "rb") as f:
             for line in f:
@@ -227,11 +236,18 @@ class Stats:
         # pread = positional read, no shared file offset, so its safe even if the process forks
         return json.loads(os.pread(self._fd, loc[1], loc[0]))["text"]
 
+    def terms(self, doc_id: str) -> List[str]:
+        # analysed terms in order (positions), cached. unknown doc id -> empty doc instead of a crash
+        t = self._terms.get(doc_id)
+        if t is None:
+            t = self.an(self._text(doc_id))
+            self._terms[doc_id] = t
+        return t
+
     def tf(self, doc_id: str) -> Counter:
         c = self._tf.get(doc_id)
         if c is None:
-            # unknown doc id -> treat as empty doc instead of crashing the query
-            c = Counter(self.an(self._text(doc_id)))
+            c = Counter(self.terms(doc_id))
             self._tf[doc_id] = c
         return c
 

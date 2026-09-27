@@ -18,6 +18,7 @@ def tiny(tmp_path, monkeypatch):
         f.write(json.dumps({"doc_id": "d2", "text": "dog fish"}) + "\n")
     monkeypatch.setattr(fb, "STOPWORDS", False)
     monkeypatch.setattr(fb, "STEMMER", "none")
+    monkeypatch.setattr(fb, "PROX_WEIGHT", 0.0)  # pure unigram QL for the hand checks
     return str(p)
 
 
@@ -77,10 +78,11 @@ def test_analyzer():
     assert [s_stem(w) for w in ["studies", "glasses", "virus", "cells", "is"]] == ["study", "glasse", "virus", "cell", "is"]
 
 
-def test_fast_tokenizer_matches_regex():
-    import re
+def test_tokenizer_splits_letters_from_digits():
     from submission.lm import tokens
-    rx = re.compile(r"[a-z0-9]+")
-    for s in ["COVID-19 (SARS-CoV-2)!", "naïve café 5µm", "K-mer İstanbul ǅ", "a\tb\nc", "", "  x  ",
-              "β-coronavirus 2019-nCoV; RT-qPCR@37°C", "日本語 text 123abc"]:
-        assert tokens(s) == rx.findall(s.lower()), s
+    assert tokens("SARS-CoV-2 and SARS-CoV2") == ["sars", "cov", "2", "and", "sars", "cov", "2"]
+    assert tokens("ACE2 / ACE-2 receptor") == ["ace", "2", "ace", "2", "receptor"]
+    assert tokens("COVID-19, covid19") == ["covid", "19", "covid", "19"]
+    # non-ascii is a separator, lowercasing happens first (kelvin sign -> k)
+    assert tokens("naïve 5µm \u212a-mer 日本語") == ["na", "ve", "5", "m", "k", "mer"]
+    assert tokens("") == [] and tokens("  \t\n ") == []
