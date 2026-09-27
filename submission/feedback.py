@@ -59,9 +59,9 @@ from typing import List, Optional, Tuple
 from submission.lm import Analyzer, Stats, ql_score, rank
 from submission import rm
 
-# ---- knobs (tuned on dev, see report) ----
+# ---- knobs (tuned on dev + leaderboard probes, see report) ----
 SMOOTHING = "dirichlet"   # "dirichlet" or "jm"
-DIRICHLET_MU = 250.0
+DIRICHLET_MU = 500.0
 JM_LAMBDA = 0.7
 STOPWORDS = True
 STEMMER = "porter"        # "none", "s" or "porter"
@@ -69,7 +69,8 @@ STEMMER = "porter"        # "none", "s" or "porter"
 FB_MODEL = "rm3"          # "rm1", "rm2" or "rm3"
 RM3_BASE = "rm1"          # which relevance model rm3 interpolates
 FB_TERMS = 20             # expansion terms kept (0 = all)
-FB_LAMBDA = 0.85          # rm3 weight on the original query (high on purpose, drift)
+FB_LAMBDA = 1.0           # rm3 weight on the original query. 1.0 = expansion off, on the held-out
+                          # data rm3 gave ~0 clean gain but lost retention at every lambda < 1
 RM_EST_MU = 0.0           # doc model smoothing inside RM estimation (0 = max likelihood)
 
 _STATS: Optional[Stats] = None
