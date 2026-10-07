@@ -125,3 +125,28 @@ def test_lambda_one_reproduces_score_candidates_with_jm_too(monkeypatch):
         a = [d for d, _ in fb.score_candidates(text, pool, 10)]
         b = [d for d, _ in fb.relevance_model_feedback(text, pool[5:10], pool, 10)]
         assert a == b
+
+
+@pytest.mark.parametrize("smoothing", ["dirichlet", "jm"])
+def test_feedback_off_returns_exactly_score_candidates(monkeypatch, smoothing):
+    # one-model rule: with feedback switched off, same ranking AND same scores as the base retriever
+    monkeypatch.setattr(fb, "FB_MODEL", "rm3")
+    monkeypatch.setattr(fb, "FB_LAMBDA", 1.0)
+    monkeypatch.setattr(fb, "SMOOTHING", smoothing)
+    fb.prepare(os.path.join(TOY, "corpus.jsonl"))
+    cands = read_candidates(os.path.join(TOY, "candidates_dev.jsonl"))
+    for qid, text in read_queries(os.path.join(TOY, "queries_dev.tsv")):
+        pool = [d for d, _ in cands[qid]]
+        base = fb.score_candidates(text, pool, 20)
+        for seed in (pool[:10], pool[5:10], [], ["ghost"]):
+            assert fb.relevance_model_feedback(text, seed, pool, 20) == base
+
+
+def test_feedback_scores_on_same_scale_as_ql(tiny, monkeypatch):
+    # lambda < 1 with a seed whose expansion is just the query words -> exactly QL scores
+    monkeypatch.setattr(fb, "FB_MODEL", "rm3")
+    monkeypatch.setattr(fb, "FB_LAMBDA", 0.5)
+    monkeypatch.setattr(fb, "FB_TERMS", 1)  # rm1 top term for "cat" is cat itself
+    a = dict(fb.score_candidates("cat", ["d1", "d2"], 10))
+    b = dict(fb.relevance_model_feedback("cat", ["d1"], ["d1", "d2"], 10))
+    assert b == pytest.approx(a)

@@ -71,8 +71,8 @@ PROX_ALPHA = 0.3
 FB_MODEL = "rm3"          # "rm1", "rm2" or "rm3"
 RM3_BASE = "rm1"          # which relevance model rm3 interpolates
 FB_TERMS = 20             # expansion terms kept (0 = all)
-FB_LAMBDA = 1.0           # rm3 weight on the original query. 1.0 = expansion off, on the held-out
-                          # data rm3 gave ~0 clean gain but lost retention at every lambda < 1
+FB_LAMBDA = 0.99          # rm3 weight on the original query (1.0 = feedback off). kept high on purpose:
+                          # on the held-out data 0.85 lost clean ndcg and ~4-5% under noise, 0.99 still gains
 RM_EST_MU = 0.0           # doc model smoothing inside RM estimation (0 = max likelihood)
 
 _STATS: Optional[Stats] = None
@@ -115,18 +115,23 @@ def relevance_model_feedback(
     candidate_doc_ids: List[str],
     k: int = 10,
 ) -> List[Tuple[str, float]]:
+    if FB_MODEL == "rm3" and FB_LAMBDA >= 1.0:
+        # feedback switched off -> exactly the base retriever, same ranking and same scores
+        return score_candidates(query, candidate_doc_ids, k)
     st = _need_stats()
     q = st.an(query)
     rel = _feedback_model(q, pseudo_relevant_doc_ids, st)
-    if not rel:
+    if not rel or not q:
         # nothing usable in the seed -> just the query
         return score_candidates(query, candidate_doc_ids, k)
     model = rm.rm3(q, rel, FB_LAMBDA) if FB_MODEL == "rm3" else rel
-    scores = rm.ce_scores(model, candidate_doc_ids, st, _smooth_param(), SMOOTHING)
+    # same document model and same scale as score_candidates: |q| * cross entropy is QL with the
+    # (fractional) expanded query counts, plus the same proximity bonus on the original query terms
+    n = len(q)
+    scores = {d: n * v for d, v in rm.ce_scores(model, candidate_doc_ids, st, _smooth_param(), SMOOTHING).items()}
     bon = _prox(q, list(scores), st)
-    if bon and q:
-        # ce = QL/|q| at lambda 1, so bonus/|q| keeps feedback(lambda=1) == score_candidates ranking
-        scores = {d: v + bon[d] / len(q) for d, v in scores.items()}
+    if bon:
+        scores = {d: v + bon[d] for d, v in scores.items()}
     return rank(scores, k)
 
 
